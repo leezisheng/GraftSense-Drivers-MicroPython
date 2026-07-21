@@ -23,7 +23,7 @@ This is a MicroPython driver for the Microchip ATECC608A and ATECC508A crypto au
 - Full CryptoAuthLib API support: CheckMAC, Counter, DeriveKey, ECDH, GenDig, GenKey, Info, Lock, Nonce, Random, Read, SHA, Sign, Verify, Write, SelfTest, and more
 - Automatic chip detection: ATECC508A vs ATECC608A
 - I2C communication with built-in retry mechanism for transient errors
-- CRC-16 verification with Viper-native acceleration fallback
+- CRC-16 verification with portable pure Python implementation
 - Comprehensive custom exception hierarchy (30+ error types) mapped to device status codes
 - Singleton status code lookup module for memory efficiency
 - Configuration zone parser with slot/key config decoding (uctypes bitfield)
@@ -58,7 +58,7 @@ This is a MicroPython driver for the Microchip ATECC608A and ATECC508A crypto au
 | Requirement | Version / Details |
 |-------------|-------------------|
 | MicroPython Firmware | v1.23.0 or later |
-| Driver Version | v1.0.0 |
+| Driver Version | v1.1.0 |
 | Dependencies | None (uses only MicroPython built-in modules: `machine`, `micropython`, `uctypes`, `ustruct`, `uhashlib`, `ubinascii`, `utime`, `sys`) |
 
 ## 文件结构
@@ -69,7 +69,7 @@ This is a MicroPython driver for the Microchip ATECC608A and ATECC508A crypto au
 ├── constant.py        # Command opcodes, config masks, timing tables (singleton)
 ├── exceptions.py      # Custom exception hierarchy (30+ error types)
 ├── host.py            # Host-side SHA-256 helper (atcah_sha256)
-├── packet.py          # Command packet serialization and CRC-16 (viper-optimized)
+├── packet.py          # Command packet serialization and CRC-16
 ├── status.py          # Status code constants and error lookup (singleton)
 ├── util.py            # Configuration zone dump utilities (slot/key config parsing)
 ├── main.py            # Test example program
@@ -85,7 +85,7 @@ This is a MicroPython driver for the Microchip ATECC608A and ATECC508A crypto au
 | `constant.py` | Singleton class `C` -- dynamically returns `micropython.const()` values for all command opcodes, parameter modes, I2C timing, zone/slot addresses, and execution time tables |
 | `exceptions.py` | Complete exception hierarchy rooted at `CryptoError` -- includes `CheckmacVerifyFailedError`, `ParseError`, `EccFaultError`, `ExecutionError`, `WatchDogAboutToExpireError`, `NoDevicesFoundError`, `UnsupportedDeviceError`, and 25+ more |
 | `host.py` | Host-side SHA-256 helper `atcah_sha256()` -- wraps `uhashlib.sha256().digest()` for pre-computation before sending to chip |
-| `packet.py` | `ATCAPacket` class -- serializes command packets with CRC-16 via `micropython.viper` accelerated computation, exposes request/response data buffers and execution delay lookup |
+| `packet.py` | `ATCAPacket` class -- serializes command packets with portable CRC-16 computation, exposes request/response data buffers and execution delay lookup |
 | `status.py` | Singleton class `S` -- maps all ATCA status codes to `micropython.const()` values and provides `decode_error()` that returns `(status_code, exception_class)` pairs |
 | `util.py` | Configuration dump utilities -- `dump_slot()`, `dump_key()`, `dump_configuration()` parse and pretty-print the 128-byte config zone using `uctypes` bitfield structures |
 | `main.py` | Test program demonstrating I2C scan, device detection, serial number read, lock status check, random number generation, and SHA-256 hashing with proper exception handling and cleanup |
@@ -311,7 +311,7 @@ finally:
 | Watchdog | Commands have a maximum execution time. If watchdog is about to expire, driver auto-sleeps to reset |
 | Retry | Default 20 retries for transient I2C errors. Adjust with `retries` parameter |
 | Singleton Modules | `constant.py` and `status.py` use `sys.modules[__name__] = Class()` to replace the module with a singleton instance. They are imported as `import constant as ATCA_CONSTANTS` and `import status as ATCA_STATUS` -- do not attempt to instantiate them |
-| Viper CRC | `packet.py` uses `@micropython.viper` for CRC-16 acceleration. A pure-Python fallback is provided in comments |
+| CRC portability | `packet.py` uses a pure-Python CRC-16 implementation so it can compile on different MicroPython ports without Viper pointer annotations |
 | Debug | Set `debug=True` in the driver constructor to see I2C communication logs |
 
 ## 版本记录

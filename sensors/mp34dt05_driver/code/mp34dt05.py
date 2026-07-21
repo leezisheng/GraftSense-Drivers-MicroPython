@@ -14,14 +14,17 @@ import micropython
 # 为 ISR 回调预留紧急异常缓冲区（100 字节）
 micropython.alloc_emergency_exception_buf(100)
 
-import rp2
+try:
+    import rp2
+except ImportError:
+    raise ImportError("mp34dt05 requires RP2040 MicroPython firmware with rp2/PIO support")
 import array
 from uctypes import addressof
 from machine import Pin
 from micropython import const
 
 # ======================================== 全局变量 ============================================
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __author__ = "FreakStudio"
 __license__ = "MIT"
 __platform__ = "MicroPython v1.23"

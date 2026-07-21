@@ -43,7 +43,7 @@ HTS221 是 ST 公司推出的电容式数字温湿度传感器，集成温度和
 | 项目 | 版本/说明 |
 |------|----------|
 | MicroPython 固件 | v1.23.0+ |
-| 驱动版本 | v1.0.0 |
+| 驱动版本 | v1.1.0 |
 | 依赖模块 | i2c_helpers.py (I2C 辅助类) |
 
 ## 文件结构
@@ -205,6 +205,7 @@ finally:
 | 版本号 | 日期 | 作者 | 修改说明 |
 |--------|------|------|----------|
 | v1.0.0 | 2026-07-19 | Jose D. Montoya | 初始规范化版本 |
+| v1.1.0 | 2026-07-21 | FreakStudio | 为启动和单次测量等待添加超时，避免 I2C/硬件异常时永久阻塞 |
 
 ## 联系方式
 - GitHub: [https://github.com/jposada202020/MicroPython_HTS221](https://github.com/jposada202020/MicroPython_HTS221)

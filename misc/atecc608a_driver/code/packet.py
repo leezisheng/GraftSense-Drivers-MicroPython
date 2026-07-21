@@ -3,18 +3,15 @@
 # @Time    : 2026/07/19 00:00
 # @Author  : stewedio
 # @File    : packet.py
-# @Description : ATECC608A/ATECC508A command packet serialization with I2C CRC-16 (viper-optimized)
+# @Description : ATECC608A/ATECC508A command packet serialization with I2C CRC-16
 # @License : MIT
-# pylint: disable=undefined-variable
-
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __author__ = "stewedio"
 __license__ = "MIT"
 __platform__ = "MicroPython v1.23"
 
 # ======================================== 导入相关模块 =========================================
 
-import micropython
 import ustruct
 import utime
 from ubinascii import hexlify
@@ -29,8 +26,8 @@ import constant as ATCA
 
 # 命令包序列化与 CRC-16 计算类
 # Command packet serialization and CRC-16 computation
-# 注：at_crc 使用 micropython.viper 加速 CRC 计算
-# Note: at_crc uses micropython.viper for accelerated CRC computation
+# 注：at_crc 使用纯 Python CRC，便于跨 MicroPython 端口编译
+# Note: at_crc uses portable pure Python for cross-port compatibility.
 class ATCAPacket(object):
     """ATCAPacket"""
 
@@ -95,10 +92,9 @@ class ATCAPacket(object):
         self.at_crc(params, self.txsize - ATCA.ATCA_CRC_SIZE)
         return params
 
-    # CRC-16 计算（Viper 原生代码编译加速，多项式 0x8005）
-    # CRC-16 computation (Viper native compile acceleration, polynomial 0x8005)
-    @micropython.viper
-    def at_crc(self, src: ptr8, length: int) -> int:  # noqa: F821
+    # CRC-16 计算（纯 Python，多项式 0x8005）
+    # CRC-16 computation (polynomial 0x8005)
+    def at_crc(self, src, length: int) -> int:
         polynom = 0x8005
         crc = 0
         for i in range(length):

@@ -10,8 +10,13 @@
 from micropython import const
 from i2c_helpers import CBits, RegisterStruct
 
+try:
+    from time import sleep_ms, ticks_diff, ticks_ms
+except ImportError:
+    from utime import sleep_ms, ticks_diff, ticks_ms
+
 # ======================================== 全局变量 ============================================
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __author__ = "Jose D. Montoya"
 __license__ = "MIT"
 __platform__ = "MicroPython v1.23"
@@ -59,6 +64,9 @@ RATE_7_HZ = const(0b10)
 # 12.5 Hz 连续测量
 RATE_12_5_HZ = const(0b11)
 data_rate_values = (ONE_SHOT, RATE_1_HZ, RATE_7_HZ, RATE_12_5_HZ)
+
+_WAIT_TIMEOUT_MS = const(1000)
+_WAIT_POLL_MS = const(2)
 
 # 块数据更新选项
 # 禁用块数据更新
@@ -255,8 +263,11 @@ class HTS221:
         # 设置启动位触发校准数据重新加载
         self._boot_bit = True
         # 等待启动完成（_boot_bit 自动清零）
+        start = ticks_ms()
         while self._boot_bit:
-            pass
+            if ticks_diff(ticks_ms(), start) >= _WAIT_TIMEOUT_MS:
+                raise RuntimeError("HTS221 boot timeout")
+            sleep_ms(_WAIT_POLL_MS)
 
     @property
     def relative_humidity(self) -> float:
@@ -354,7 +365,7 @@ class HTS221:
         # 写入数据速率寄存器
         self._data_rate = value
 
-    def take_measurements(self) -> None:
+    def take_measurements(self, timeout_ms: int = _WAIT_TIMEOUT_MS) -> None:
         """
         触发单次测量
         仅在 data_rate 设置为 ONE_SHOT 时有效。
@@ -371,8 +382,11 @@ class HTS221:
         # 设置单次测量触发位
         self._one_shot_bit = True
         # 等待测量完成（_one_shot_bit 自动清零）
+        start = ticks_ms()
         while self._one_shot_bit:
-            pass
+            if ticks_diff(ticks_ms(), start) >= timeout_ms:
+                raise RuntimeError("HTS221 one-shot measurement timeout")
+            sleep_ms(_WAIT_POLL_MS)
 
     @property
     def block_data_update(self) -> str:
