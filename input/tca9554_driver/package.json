@@ -1,0 +1,16 @@
+{
+  "name": "tca9554_driver",
+  "urls": [
+    ["tca9554.py", "code/tca9554.py"]
+  ],
+  "version": "1.0.0",
+  "_comments": {
+    "chips": "该包支持运行的芯片型号，all表示无芯片限制",
+    "fw": "该包依赖的特定固件如ulab、lvgl,all表示无固件依赖"
+  },
+  "description": "TCA9554 8-bit I2C GPIO expander driver for MicroPython",
+  "author": "FreakStudio",
+  "license": "MIT",
+  "chips": "all",
+  "fw": "all"
+}

@@ -1,0 +1,16 @@
+{
+  "name": "cst328_driver",
+  "urls": [
+    ["cst328.py", "code/cst328.py"]
+  ],
+  "version": "1.0.0",
+  "_comments": {
+    "chips": "Supported chip models, 'all' means no chip restriction",
+    "fw": "Specific firmware dependencies such as ulab or lvgl, 'all' means no firmware dependency"
+  },
+  "description": "CST328 I2C capacitive touch driver for MicroPython",
+  "author": "FreakStudio",
+  "license": "MIT",
+  "chips": "all",
+  "fw": "all"
+}
