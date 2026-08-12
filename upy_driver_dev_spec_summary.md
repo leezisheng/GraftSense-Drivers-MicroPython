@@ -873,7 +873,7 @@ from machine import Pin, Timer
 # 初始化定时器
 self.wdi   = Pin(wdi_pin, Pin.OUT)
 self.state = 0
-self.timer = Timer(-1)
+self.timer = Timer(0)  # Use Timer(-1) only on RP2/Pico/RP2040/RP2350 or Zephyr.
 self.timer.init(
     period=feed_interval,
     mode=Timer.PERIODIC,
@@ -1133,7 +1133,7 @@ from machine import Timer
 class SHT30:
     def start_periodic_sampling(self, interval: int = None):
         interval = interval or self.DEFAULT_SAMPLING_RATE
-        self._timer = Timer(-1)
+        self._timer = Timer(0)  # Use Timer(-1) only on RP2/Pico/RP2040/RP2350 or Zephyr.
         self._timer.init(period=interval, mode=Timer.PERIODIC, callback=self._sampling_callback)
 
     def stop_periodic_sampling(self):
@@ -2202,7 +2202,7 @@ pre-commit install
 
 | # | 改写项 | 规范来源 |
 |---|---|---|
-| 1 | 补全文件头 7 行注释 | 十·10.3 |
+| 1 | 补全文件头 7 行注释；`@Author` 从原文件读取并沿用，若无则提示用户填写，不得使用占位符 | 十·10.3 |
 | 2 | 补全 6 个分区标注注释，顺序正确 | 十·10.4 |
 | 3 | 初始化配置区必须有 `time.sleep(3)` | 十·10.2、五·规则6 |
 | 4 | 初始化配置区必须有 `print("FreakStudio: ...")` | 十·10.2、五·规则6 |
@@ -2218,9 +2218,9 @@ pre-commit install
 | # | 改写项 | 规范来源 |
 |---|---|---|
 | 11 | 高频更新/模式切换函数注释默认调用，保留定义供 REPL 手动调用 | 十·10.1 |
-| 12 | 检查已有测试代码是否覆盖正常参数场景、边界参数场景、异常参数场景，缺少的场景应补全调用代码 | 十·10.1 |
-| 12a | 若驱动使用 I2C，检查初始化配置区是否包含完整扫描逻辑（`i2c.scan()` 为空报错、遍历找目标地址报错、读取芯片 ID 比对）；缺少则补全；ID 寄存器地址和期望值须声明为全局变量区 `UPPER_CASE` 常量 | 十·10.2 |
-| 13 | 功能函数加简短中文 docstring | 十·10.4 |
+| 12 | 三类测试场景覆盖检查（正常/边界/异常参数），缺少的场景补全调用代码 | 十·10.1 |
+| 12a | I2C 设备扫描 + ID 验证检查：若驱动使用 I2C，检查初始化配置区是否包含完整扫描逻辑；缺少则补全；ID 寄存器地址和期望值须声明为全局变量区 `UPPER_CASE` 常量 | 十·10.2 |
+| 13 | 功能函数加简短 docstring | 十·10.4 |
 | 14 | 全局变量命名遵循 `snake_case` | 十八·14.3 |
 
 **P2 — 可选**
@@ -2326,69 +2326,3 @@ pre-commit install
 - 每步完成后显示 `[步骤 X/5 — skill名称: 文件名 完成]`，暂停等待用户确认再继续
 - 用户回复"修改"或"重做"时，重新执行当前步骤，不影响已完成步骤
 - 多驱动文件时，`gen-readme`/`gen-pkg`/`pack-driver` 基于目录中第一个驱动文件执行
-
----
-
-### 22.7 `/upy-opt-driver` 驱动性能优化
-
-**定位**：已规范化的驱动文件，按 GraftSense 性能优化指南改写，聚焦**执行速度**提升。
-
-**优化优先级**
-
-| 优先级 | 项目 | 典型提速 | 说明 |
-|---|---|---|---|
-| P0 | 预分配缓冲区 | 消除 GC 抖动 | `_BUFn` 全局复用，`readinto()` 替代 `read()` |
-| P0 | `memoryview` 切片 | 零拷贝 | 切片 > 32 字节时用 `memoryview`，避免副本创建 |
-| P0 | 缓存对象引用 | 5–20% | 循环 > 100 次时，`self.xxx` 缓存到局部变量 |
-| P0 | `const()` 常量 | 零开销 | 模块级常量用 `const()` 包裹，编译时替换 |
-| P1 | 手动 GC 控制 | 可控延迟 | 批量操作前 `gc.collect()`，避免中途随机触发 |
-| P1 | `@native` 装饰器 | ~2 倍 | 大量字节码执行，无生成器/关键字参数 |
-| P1 | `@viper` 装饰器 | ~58 倍（整数） | 整数运算为主，无浮点/默认参数/生成器 |
-| P1 | 整数替代浮点 | ~57% | 无 FPU 芯片（RP2040/ESP8266）循环内浮点改整数 |
-| P2 | `viper ptr8/ptr16/ptr32` | ~23 倍 | 大循环遍历 `bytearray`，指针转换放循环外 |
-| P2 | SIO 寄存器直写 | ~48% | RP2040 专属，高频 GPIO 翻转（> 1000 次/秒） |
-| P2 | `array` 替代 `list` | 连续内存 | 大量同类型数值存储 |
-
-**关键约束**
-
-- `@viper` 改写必须在 docstring Notes 中标注整数溢出风险和位宽限制
-- `@native` 改写必须在 docstring Notes 中标注限制（无生成器、无关键字参数）
-- SIO 寄存器操作必须标注"RP2040 专属，其他平台不可用"
-- 支持单文件模式和多文件模式（目录扫描 → 逐文件处理 → 暂停确认）
-
----
-
-### 22.8 `/upy-slim-driver` 驱动内存占用优化
-
-**定位**：已规范化的驱动文件，按 GraftSense 内存最小化指南改写，聚焦**RAM 占用**降低。
-
-**优化优先级**
-
-| 优先级 | 项目 | 典型节省 | 说明 |
-|---|---|---|---|
-| P0 | 预分配缓冲区 | 消除峰值堆分配 | 与 `upy-opt-driver` P0#1 重叠，不重复执行 |
-| P0 | 私有 `_CONST` | ~40 字节/常量 | 模块内部常量用 `_CONST`，不写入全局字典 |
-| P0 | 避免循环字符串 `+` | 消除临时对象 | 用 `.join()` + 生成器或 `.format()` |
-| P0 | `bytes`/`bytearray` 替代 `list` | ~90%（寄存器表） | 同类型数值容器，100 个地址节省 ~700 字节 |
-| P1 | `gc.collect()` 前置 | 降低随机性 | 批量操作前手动触发，避免中途打断 |
-| P1 | `gc.disable()`/`gc.enable()` | 防止 GC 中途打断 | 时序敏感帧传输，必须 `try/finally` 包裹 |
-| P1 | `struct.pack_into()` | 消除临时 bytes | 复用预分配缓冲区，零堆分配 |
-| P2 | `__slots__` | 50–200 字节/实例 | 固定属性集合，禁用 `__dict__` |
-| P2 | 生成器替代列表 | 峰值 RAM O(N)→O(1) | 大列表（> 50 元素）流式处理 |
-| P2 | `micropython.mem_info()` | 诊断用 | 用户明确要求时添加，标注 `# [调试]` |
-
-**关键约束**
-
-- `_CONST` 改写仅适用于模块内部常量；外部引用的公共常量保留原名
-- `gc.disable()` 区间必须短且有界，禁止包含可能阻塞的 I/O
-- 与 `upy-opt-driver` 的 P0#1（预分配缓冲区）重叠，不重复执行
-- 支持单文件模式和多文件模式（目录扫描 → 逐文件处理 → 暂停确认）
-
-**与 `upy-opt-driver` 的关系**
-
-| 维度 | `upy-opt-driver`（性能） | `upy-slim-driver`（内存） |
-|---|---|---|
-| 目标 | 执行速度（时间复杂度） | RAM 占用（空间复杂度） |
-| 重叠项 | P0#1 预分配缓冲区 | P0#1 预分配缓冲区 |
-| 重叠处理 | 从"消除 GC 抖动"角度改写 | 从"降低峰值 RAM"角度改写，若已执行则跳过 |
-| 互补性 | `@viper`/`@native`/`ptr` 提速 | `_CONST`/`__slots__`/生成器降内存 |

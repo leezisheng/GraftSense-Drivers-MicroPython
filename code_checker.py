@@ -1,113 +1,211 @@
-# Python env   : Python v3.12.0
+﻿# Python env   : Python v3.12.0
 # -*- coding: utf-8 -*-
-# @Time    : 2026/3/06 下午6:36
-# @Author  : 李清水
-# @File    : list_package_info.py
-# @Description : MicroPython代码规范检查工具，自动化校验驱动文件和main.py是否符合8条预设编码规范，支持单文件、多文件及目录（递归/非递归）批量检查
+# @Time    : 2026/3/06 涓嬪崍6:36
+# @Author  : 鏉庢竻姘?# @File    : code_checker.py
+# @Description : MicroPython浠ｇ爜瑙勮寖妫€鏌ュ伐鍏凤紝鏍￠獙椹卞姩鏂囦欢銆乵ain.py鍜宲ackage.json鏄惁绗﹀悎GraftSense瑙勮寖
 
 """
-    Pre-commit code checker for MicroPython driver files & main.py
-    Check all specified rules:
-    1. 非main.py文件:必须包含4个顶层全局变量(__version__, __author__, __license__, __platform__)
-    2. 非main.py文件:必须包含独立的 # @License : MIT 注释行
-    3. 所有文件:raise/print中无中文字符
-    4. main.py:全局变量区无实例化，初始化配置区有实例化
-    5. main.py:while循环仅在主程序区
-    6. main.py:初始化配置区有time.sleep(3)和FreakStudio打印（非main.py跳过）
-    7. 所有文件:__init__方法有参数类型注解+try-except
-    8. 非main.py文件:类中所有有入口参数的方法必须包含参数合法性校验（isinstance/hasattr/取值判断+raise）
+Pre-commit code checker for MicroPython driver packages.
 """
 
-# ======================================== 导入相关模块 =========================================
+# ======================================== 瀵煎叆鐩稿叧妯″潡 =========================================
 
 import argparse
-import re
 import ast
+import json
+import re
+import sys
 from pathlib import Path
 
-# ======================================== 全局变量 ============================================
+# ======================================== 鍏ㄥ眬鍙橀噺 ============================================
 
 REQUIRED_GLOBALS = ["__version__", "__author__", "__license__", "__platform__"]
 LICENSE_COMMENT = "# @License : MIT"
-FREAKSTUDIO_PATTERN = r'print\("FreakStudio: .*"\)'
-SLEEP3_PATTERN = r"time\.sleep\(3\)"
-MAIN_SECTION_MARKER = "# ========================================  主程序  ============================================"
-INIT_CONFIG_MARKER = "# ======================================== 初始化配置 ==========================================="
-CHINESE_CHAR_PATTERN = re.compile(r"[\u4e00-\u9fff]")  # 匹配中文字符
-# 精准匹配实例化:包含模块.类(如machine.UART)、变量=类(如sensor=TestSensor)
-MACHINE_INSTANCE_PATTERNS = [
-    r"\w+\.\w+\(",  # 匹配 machine.UART(1) 这类
-    r"\w+ = \w+\(",  # 匹配 sensor = TestSensor(5) 这类
-    r"\w+ = \w+\.\w+\(",  # 匹配 uart = machine.UART(1) 这类
+SECTION_TITLES = [
+    "\u5bfc\u5165\u76f8\u5173\u6a21\u5757",
+    "\u5168\u5c40\u53d8\u91cf",
+    "\u529f\u80fd\u51fd\u6570",
+    "\u81ea\u5b9a\u4e49\u7c7b",
+    "\u521d\u59cb\u5316\u914d\u7f6e",
+    "\u4e3b\u7a0b\u5e8f",
 ]
+SECTION_TITLE_SET = set(SECTION_TITLES)
+FREAKSTUDIO_PATTERN = r'print\s*\(\s*["\']FreakStudio:'
+SLEEP3_PATTERN = r"time\.sleep\s*\(\s*3\s*\)"
+CHINESE_CHAR_PATTERN = re.compile(r"[\u4e00-\u9fff]")
+HARDWARE_CTORS = {"I2C", "SPI", "UART", "Pin", "Timer", "ADC", "PWM"}
+TEST_DEMO_PATTERN = re.compile(r"(^test_|_test\.py$|^demo_|_demo\.py$|test\.py$)", re.IGNORECASE)
 
-# ======================================== 功能函数 ============================================
+# ======================================== 鍔熻兘鍑芥暟 ============================================
 
-def strip_python_comments(code: str) -> str:
-    """
-    剥离Python代码中的所有注释，避免注释干扰检查
-    """
-    import re
-    # 移除多行注释
-    code = re.sub(r"'''[\s\S]*?'''", "", code)
-    code = re.sub(r'"""[\s\S]*?"""', "", code)
-    # 移除单行注释
-    code = re.sub(r"#.*", "", code)
-    return code.strip()
 
 def read_file_content(file_path: Path) -> str:
-    """
-    读取文件内容（UTF-8编码）
-    """
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            return f.read()
+        return file_path.read_text(encoding="utf-8-sig")
     except Exception as e:
         print(f"[FAIL] Error reading file {file_path}: {str(e)}")
         return ""
 
+
+def normalize_section_line(line: str) -> str:
+    stripped = line.strip()
+    if not stripped.startswith("#"):
+        return ""
+    core = re.sub(r"[=#\s]", "", stripped)
+    return core if core in SECTION_TITLE_SET else ""
+
+
+def parse_section_markers(content: str) -> list:
+    markers = []
+    for line_no, line in enumerate(content.splitlines(), 1):
+        title = normalize_section_line(line)
+        if title:
+            indent = len(line) - len(line.lstrip(" \t"))
+            markers.append({"title": title, "line": line_no, "indent": indent, "text": line})
+    return markers
+
+
+def get_section_ranges(content: str) -> dict:
+    lines = content.splitlines()
+    markers = parse_section_markers(content)
+    first = {}
+    for marker in markers:
+        first.setdefault(marker["title"], marker)
+    ordered = sorted(first.values(), key=lambda marker: marker["line"])
+    ranges = {}
+    for idx, marker in enumerate(ordered):
+        start = marker["line"] + 1
+        end = ordered[idx + 1]["line"] if idx + 1 < len(ordered) else len(lines) + 1
+        ranges[marker["title"]] = (start, end)
+    return ranges
+
+
+def extract_section_content(content: str, marker: str) -> str:
+    target = normalize_section_line(marker) or re.sub(r"[=#\s]", "", marker)
+    ranges = get_section_ranges(content)
+    if target not in ranges:
+        return ""
+    start, end = ranges[target]
+    lines = content.splitlines()
+    return "\n".join(lines[start - 1 : end - 1])
+
+
+def in_range(line_no: int, section_range: tuple) -> bool:
+    return bool(section_range) and section_range[0] <= line_no < section_range[1]
+
+
+def call_name(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = call_name(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return ""
+
+
+def function_arg_nodes(func: ast.FunctionDef) -> list:
+    args = []
+    args.extend(getattr(func.args, "posonlyargs", []))
+    args.extend(func.args.args)
+    args.extend(func.args.kwonlyargs)
+    if func.args.vararg:
+        args.append(func.args.vararg)
+    if func.args.kwarg:
+        args.append(func.args.kwarg)
+    return args
+
+
+def missing_arg_annotations(func: ast.FunctionDef, skip_self: bool = True) -> list:
+    missing = []
+    for arg in function_arg_nodes(func):
+        if skip_self and arg.arg in ("self", "cls"):
+            continue
+        if arg.annotation is None:
+            missing.append(arg.arg)
+    return missing
+
+
+def annotation_text(node: ast.AST) -> str:
+    try:
+        return ast.unparse(node)
+    except Exception:
+        return "<annotation>"
+
+
+def has_none_return(func: ast.FunctionDef) -> bool:
+    return func.returns is not None and annotation_text(func.returns) in ("None", "NoneType")
+
+
+def decorator_names(func: ast.FunctionDef) -> list:
+    names = []
+    for decorator in func.decorator_list:
+        try:
+            names.append(ast.unparse(decorator))
+        except Exception:
+            names.append(type(decorator).__name__)
+    return names
+
+
+def is_property_setter(func: ast.FunctionDef) -> bool:
+    return any(name.endswith(".setter") for name in decorator_names(func))
+
+
+def names_in_node(node: ast.AST) -> set:
+    return {child.id for child in ast.walk(node) if isinstance(child, ast.Name)}
+
+
+def has_raise(stmt: ast.AST) -> bool:
+    return any(isinstance(child, ast.Raise) for child in ast.walk(stmt))
+
+
+def exact_case_exists(base: Path, relative_path: str) -> tuple:
+    if not relative_path or Path(relative_path).is_absolute() or relative_path.startswith(("/", "\\")):
+        return False, False, "rooted/absolute path"
+    current = base
+    for part in re.split(r"[\\/]+", relative_path):
+        if part in ("", "."):
+            continue
+        if not current.exists() or not current.is_dir():
+            return False, False, f"parent missing: {current}"
+        exact = {child.name: child for child in current.iterdir()}
+        if part in exact:
+            current = exact[part]
+            continue
+        insensitive = {child.name.lower(): child for child in current.iterdir()}
+        if part.lower() in insensitive:
+            return False, True, str(insensitive[part.lower()])
+        return False, False, f"missing component: {part} under {current}"
+    return current.exists(), current.exists(), str(current)
+
+
 def check_required_globals(content: str, file_path: Path) -> bool:
-    """
-    检查4个必填全局变量是否存在（仅非main.py文件需要检查）
-    """
     if file_path.name == "main.py":
         print(f"[PASS] {file_path}: main.py Skip global variables check (main.py)")
         return True
-
     try:
         tree = ast.parse(content)
     except Exception as e:
         print(f"[FAIL] {file_path}: Failed to parse code AST: {str(e)}")
         return False
-
-    missing_vars = []
-    for var_name in REQUIRED_GLOBALS:
-        found = False
-        for node in tree.body:
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id == var_name:
-                        found = True
-                        break
-        if not found:
-            missing_vars.append(var_name)
-
-    if missing_vars:
-        print(f"[FAIL] {file_path}: Missing required global variables: {', '.join(missing_vars)}")
+    assigned = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assigned.add(target.id)
+    missing = [name for name in REQUIRED_GLOBALS if name not in assigned]
+    if missing:
+        print(f"[FAIL] {file_path}: Missing required global variables: {', '.join(missing)}")
         return False
     print(f"[PASS] {file_path}: All 4 required global variables exist")
     return True
 
 
 def check_license_comment(content: str, file_path: Path) -> bool:
-    """
-    精准匹配独立的 # @License : MIT 注释行（仅非main.py文件需要检查）
-    """
     if file_path.name == "main.py":
         print(f"[PASS] {file_path}: Skip License comment check (main.py)")
         return True
-
-    lines = [line.strip() for line in content.split("\n")]
+    lines = [line.strip() for line in content.splitlines()]
     if LICENSE_COMMENT.strip() in lines:
         print(f"[PASS] {file_path}: # @License : MIT comment exists")
         return True
@@ -116,78 +214,69 @@ def check_license_comment(content: str, file_path: Path) -> bool:
 
 
 def check_no_chinese_in_raise_print(content: str, file_path: Path) -> bool:
-    """
-    检查raise/print中的中文字符（所有文件都检查）
-    """
-    lines = content.split("\n")
+    try:
+        tree = ast.parse(content)
+    except Exception as e:
+        print(f"[FAIL] {file_path}: Failed to parse code AST for raise/print check: {str(e)}")
+        return False
     error_lines = []
-    for line_num, line in enumerate(lines, 1):
-        if "raise" in line or "print(" in line:
-            str_matches = re.findall(r'"([^"]*)"|\'([^\']*)\'', line)
-            for match in str_matches:
-                str_content = match[0] or match[1]
-                if CHINESE_CHAR_PATTERN.search(str_content):
-                    error_lines.append(line_num)
-
+    for node in ast.walk(tree):
+        is_print = isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "print"
+        is_raise = isinstance(node, ast.Raise)
+        if not (is_print or is_raise):
+            continue
+        for child in ast.walk(node):
+            if isinstance(child, ast.Constant) and isinstance(child.value, str) and CHINESE_CHAR_PATTERN.search(child.value):
+                error_lines.append(getattr(child, "lineno", getattr(node, "lineno", 0)))
     if error_lines:
-        print(f"[FAIL] {file_path}: Chinese characters found in raise/print (lines: {', '.join(map(str, error_lines))})")
+        lines = ", ".join(str(line) for line in sorted(set(error_lines)))
+        print(f"[FAIL] {file_path}: Chinese characters found in raise/print strings (lines: {lines})")
         return False
     print(f"[PASS] {file_path}: No Chinese in raise/print messages")
     return True
 
 
-def extract_section_content(content: str, marker: str) -> str:
-    """
-    🔥 模糊匹配分隔符：无视 = 数量、空格、格式差异
-    只匹配标题核心文字，彻底解决分隔符不一致导致的提取失败
-    """
-    import re
-    # 提取标题核心文字（去掉所有=和空格）
-    target_title = re.sub(r'[=#\s]', '', marker)
-
-    # 匹配所有分隔符行，提取标题
-    lines = content.split("\n")
-    section_start = -1
-    section_end = -1
-
-    for idx, line in enumerate(lines):
-        clean_line = re.sub(r'[=#\s]', '', line)
-        # 找到目标分区
-        if clean_line == target_title:
-            section_start = idx + 1
-            # 找到下一个分区作为结束
-            for jdx in range(section_start, len(lines)):
-                next_clean = re.sub(r'[=#\s]', '', lines[jdx])
-                if next_clean in ["全局变量", "初始化配置", "主程序"]:
-                    section_end = jdx
-                    break
-            break
-
-    if section_start != -1 and section_end != -1:
-        return "\n".join(lines[section_start:section_end])
-    return ""
+def check_section_layout(content: str, file_path: Path) -> bool:
+    if file_path.name == "__init__.py":
+        print(f"[PASS] {file_path}: Skip section layout check (__init__.py package wrapper)")
+        return True
+    markers = parse_section_markers(content)
+    first = {}
+    duplicates = []
+    for marker in markers:
+        if marker["title"] in first:
+            duplicates.append(marker)
+        else:
+            first[marker["title"]] = marker
+    missing = [title for title in SECTION_TITLES if title not in first]
+    ordered_titles = [marker["title"] for marker in sorted(first.values(), key=lambda item: item["line"])]
+    non_top = [marker for marker in markers if marker["indent"] != 0]
+    errors = []
+    if missing:
+        errors.append("missing sections: " + ", ".join(missing))
+    if duplicates:
+        errors.append("duplicate sections: " + ", ".join(f"{m['title']}@{m['line']}" for m in duplicates))
+    if non_top:
+        errors.append("non-top-level sections: " + ", ".join(f"{m['title']}@{m['line']} indent={m['indent']}" for m in non_top))
+    if ordered_titles != SECTION_TITLES:
+        errors.append("section order is " + " -> ".join(ordered_titles or ["<none>"]))
+    if errors:
+        print(f"[FAIL] {file_path}: Section layout invalid; {'; '.join(errors)}")
+        return False
+    print(f"[PASS] {file_path}: Six top-level sections exist in strict order")
+    return True
 
 
 def check_init_config_section(content: str, file_path: Path) -> bool:
-    """
-    检查初始化配置区（仅main.py需要检查，非main.py跳过）
-    修复：宽松匹配，支持空格、忽略注释
-    """
     if file_path.name != "main.py":
         print(f"[PASS] {file_path}: Skip init config section check (non-main.py file)")
         return True
-
-    init_content = extract_section_content(content, INIT_CONFIG_MARKER)
-    # 宽松匹配：支持空格、换行
-    has_sleep3 = bool(re.search(r"time\.sleep\s*\(\s*3\s*\)", init_content))
-    has_freakstudio = bool(re.search(r'print\s*\(\s*"FreakStudio:', init_content))
-
+    init_content = extract_section_content(content, "\u521d\u59cb\u5316\u914d\u7f6e")
     errors = []
-    if not has_sleep3:
+    if not re.search(SLEEP3_PATTERN, init_content):
         errors.append("time.sleep(3)")
-    if not has_freakstudio:
+    if not re.search(FREAKSTUDIO_PATTERN, init_content):
         errors.append('print("FreakStudio: xxx")')
-
     if errors:
         print(f"[FAIL] {file_path}: Init config section missing: {', '.join(errors)}")
         return False
@@ -196,36 +285,37 @@ def check_init_config_section(content: str, file_path: Path) -> bool:
 
 
 def check_main_py_instance_location(content: str, file_path: Path) -> bool:
-    """
-    精准检查main.py实例化位置（仅main.py需要检查）
-    """
-    if "main.py" not in str(file_path):
+    if file_path.name != "main.py":
         print(f"[PASS] {file_path}: Skip instantiation location check (non-main.py file)")
         return True
-
-    global_content = extract_section_content(
-        content, "# ======================================== 全局变量 ============================================"
-    )
-    init_content = extract_section_content(content, INIT_CONFIG_MARKER)
-
-    global_has_instance = False
-    for pattern in MACHINE_INSTANCE_PATTERNS:
-        if re.search(pattern, global_content):
-            global_has_instance = True
-            break
-
-    init_has_instance = False
-    for pattern in MACHINE_INSTANCE_PATTERNS:
-        if re.search(pattern, init_content):
-            init_has_instance = True
-            break
-
+    ranges = get_section_ranges(content)
+    global_range = ranges.get("\u5168\u5c40\u53d8\u91cf")
+    init_range = ranges.get("\u521d\u59cb\u5316\u914d\u7f6e")
+    try:
+        tree = ast.parse(content)
+    except Exception as e:
+        print(f"[FAIL] {file_path}: Failed to parse code AST for instance check: {str(e)}")
+        return False
+    global_instances = []
+    init_instances = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = call_name(node.func)
+        simple = name.split(".")[-1]
+        is_instance = simple in HARDWARE_CTORS or simple[:1].isupper()
+        if not is_instance:
+            continue
+        line_no = getattr(node, "lineno", 0)
+        if in_range(line_no, global_range):
+            global_instances.append(f"{name}@{line_no}")
+        if in_range(line_no, init_range):
+            init_instances.append(f"{name}@{line_no}")
     errors = []
-    if global_has_instance:
-        errors.append("Instance found in global variables section (invalid)")
-    if not init_has_instance:
-        errors.append("No instance found in init config section (required)")
-
+    if global_instances:
+        errors.append("instances in global section: " + ", ".join(global_instances))
+    if not init_instances:
+        errors.append("no hardware/driver instance found in init config section")
     if errors:
         print(f"[FAIL] {file_path}: {'; '.join(errors)}")
         return False
@@ -234,262 +324,273 @@ def check_main_py_instance_location(content: str, file_path: Path) -> bool:
 
 
 def check_main_py_while_loop(content: str, file_path: Path) -> bool:
-    """
-    精准检查while循环仅在主程序区（仅main.py需要检查）
-    修复：模糊匹配分隔符 + 忽略注释 + 支持所有while写法
-    """
     if file_path.name != "main.py":
         print(f"[PASS] {file_path}: Skip while loop location check (non-main.py file)")
         return True
-
-    # 🔥 模糊匹配主程序分隔符（无视=数量、空格）
-    lines = content.split("\n")
-    main_start_idx = -1
-    target_main = re.sub(r'[=#\s]', '', MAIN_SECTION_MARKER)
-
-    for idx, line in enumerate(lines):
-        clean_line = re.sub(r'[=#\s]', '', line)
-        if clean_line == target_main:
-            main_start_idx = idx
-            break
-
-    # 划分区域：非主程序区 = 分隔符前，主程序区 = 分隔符后
-    non_main_content = "\n".join(lines[:main_start_idx]) if main_start_idx != -1 else content
-    main_content = "\n".join(lines[main_start_idx:]) if main_start_idx != -1 else ""
-
-    # 去除注释，避免干扰
-    non_main_content = strip_python_comments(non_main_content)
-    main_content = strip_python_comments(main_content)
-
-    # 匹配所有while写法
-    while_pattern = re.compile(r"^\s*while\s+", re.MULTILINE)
-    while_in_non_main = bool(while_pattern.search(non_main_content))
-    while_in_main = bool(while_pattern.search(main_content))
-    has_any_while = bool(while_pattern.search(content))
-
-    # 校验规则
-    if while_in_non_main:
-        print(f"[FAIL] {file_path}: while loop found outside main program section (invalid)")
+    ranges = get_section_ranges(content)
+    main_range = ranges.get("\u4e3b\u7a0b\u5e8f")
+    try:
+        tree = ast.parse(content)
+    except Exception as e:
+        print(f"[FAIL] {file_path}: Failed to parse code AST for while check: {str(e)}")
         return False
-    if has_any_while and not while_in_main:
-        print(f"[FAIL] {file_path}: while loop not found in main program section (required)")
+    outside = []
+    inside = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.While):
+            line_no = getattr(node, "lineno", 0)
+            if in_range(line_no, main_range):
+                inside.append(line_no)
+            else:
+                outside.append(line_no)
+    if outside:
+        print(f"[FAIL] {file_path}: while loop found outside main program section (lines: {', '.join(map(str, outside))})")
         return False
-
-    print(f"[PASS] {file_path}: main.py while loop location is correct")
+    if inside:
+        print(f"[PASS] {file_path}: main.py while loop location is correct")
+        return True
+    print(f"[PASS] {file_path}: main.py has no while loop to validate")
     return True
 
+
 def check_type_hints_and_try_except(content: str, file_path: Path) -> bool:
-    """
-    检查__init__方法的参数类型注解（仅检查类型注解，移除try-except检查）
-    """
     try:
         tree = ast.parse(content)
     except Exception as e:
         print(f"[FAIL] {file_path}: Failed to parse code AST for type check: {str(e)}")
         return False
-
-    has_type_hints = False
-    has_init_method = False
-
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "__init__":
-            has_init_method = True
-            # 仅检查类型注解（移除try-except检查）
-            for arg in node.args.args:
-                if hasattr(arg, "annotation") and arg.annotation:
-                    has_type_hints = True
-
-    # 无__init__方法则跳过检查
-    if not has_init_method:
-        print(f"[PASS] {file_path}: Skip type hint check (no init method)")
-        return True
-
-    # 仅校验类型注解
-    if not has_type_hints:
-        print(f"[FAIL] {file_path}: No type hints found in __init__ parameters")
+    errors = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef):
+            missing_args = missing_arg_annotations(node, skip_self=False)
+            if missing_args or node.returns is None:
+                kind = "main.py helper" if file_path.name == "main.py" else "module helper"
+                detail = []
+                if missing_args:
+                    detail.append("missing args " + ", ".join(missing_args))
+                if node.returns is None:
+                    detail.append("missing return")
+                errors.append(f"{kind} {node.name}@{node.lineno}: {'; '.join(detail)}")
+    for cls in [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]:
+        for func in cls.body:
+            if not isinstance(func, ast.FunctionDef):
+                continue
+            missing_args = missing_arg_annotations(func, skip_self=True)
+            missing_return = func.returns is None
+            must_check = False
+            if func.name == "__init__":
+                must_check = True
+                missing_return = not has_none_return(func)
+            elif is_property_setter(func):
+                must_check = True
+            elif not func.name.startswith("_"):
+                must_check = True
+            elif func.name in ("__enter__", "__exit__"):
+                must_check = True
+            if must_check and (missing_args or missing_return):
+                detail = []
+                if missing_args:
+                    detail.append("missing args " + ", ".join(missing_args))
+                if missing_return:
+                    detail.append("missing return" + (" -> None" if func.name == "__init__" else ""))
+                errors.append(f"{cls.name}.{func.name}@{func.lineno}: {'; '.join(detail)}")
+    if errors:
+        print(f"[FAIL] {file_path}: Type annotation issues: {' | '.join(errors)}")
         return False
-    print(f"[PASS] {file_path}: Type hints exist in __init__ parameters")
+    print(f"[PASS] {file_path}: Required type annotations are complete")
     return True
 
 
 def check_method_param_validation(content: str, file_path: Path) -> bool:
-    """
-    检查非main.py文件中类的所有有参数方法是否包含参数合法性校验（isinstance/hasattr/取值判断+raise）
-    """
-    # main.py跳过该检查
     if file_path.name == "main.py":
         print(f"[PASS] {file_path}: Skip method parameter validation check (main.py)")
         return True
-
     try:
         tree = ast.parse(content)
     except Exception as e:
         print(f"[FAIL] {file_path}: Failed to parse code AST for param check: {str(e)}")
         return False
-
-    # 存储缺少参数校验的方法
-    missing_validation_methods = []
-
-    # 遍历所有类
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef):
-            class_name = node.name
-            # 遍历类中的所有方法
-            for func in node.body:
-                if isinstance(func, ast.FunctionDef):
-                    func_name = func.name
-                    # 获取方法参数（排除self/cls）
-                    args = [arg.arg for arg in func.args.args if arg.arg not in ["self", "cls"]]
-                    if not args:  # 无入口参数，跳过
-                        continue
-
-                    # 检查方法体是否包含参数校验逻辑
-                    has_validation = False
-                    # 遍历方法体所有节点
-                    for stmt in ast.walk(func):
-                        # 1. 检查是否有isinstance判断 + raise
-                        if isinstance(stmt, ast.If):
-                            # 检查条件是否包含isinstance/hasattr/取值判断
-                            cond = stmt.test
-                            has_isinstance = False
-                            has_hasattr = False
-                            has_value_check = False
-
-                            # 检查isinstance调用
-                            if isinstance(cond, ast.Call) and isinstance(cond.func, ast.Name) and cond.func.id == "isinstance":
-                                has_isinstance = True
-                            # 检查hasattr调用
-                            elif isinstance(cond, ast.Call) and isinstance(cond.func, ast.Name) and cond.func.id == "hasattr":
-                                has_hasattr = True
-                            # 检查取值范围判断（==/!=/>/<等）
-                            elif isinstance(cond, (ast.Compare, ast.BoolOp)):
-                                has_value_check = True
-
-                            # 检查if块内是否有raise
-                            has_raise = False
-                            for body_stmt in stmt.body:
-                                if isinstance(body_stmt, ast.Raise):
-                                    has_raise = True
-                                    break
-
-                            if (has_isinstance or has_hasattr or has_value_check) and has_raise:
-                                has_validation = True
-                                break
-
-                    if not has_validation:
-                        missing_validation_methods.append(f"{class_name}.{func_name}")
-
-    if missing_validation_methods:
-        print(f"[FAIL] {file_path}: Methods missing parameter validation: {', '.join(missing_validation_methods)}")
+    missing = []
+    for cls in [node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)]:
+        for func in cls.body:
+            if not isinstance(func, ast.FunctionDef):
+                continue
+            if func.name.startswith("__") and func.name.endswith("__") and func.name != "__init__":
+                continue
+            if func.name.startswith("_") and func.name != "__init__":
+                continue
+            params = [arg.arg for arg in function_arg_nodes(func) if arg.arg not in ("self", "cls")]
+            if not params:
+                continue
+            validated = set()
+            for stmt in ast.walk(func):
+                if isinstance(stmt, ast.If) and has_raise(stmt):
+                    checked_names = names_in_node(stmt.test)
+                    for param in params:
+                        if param in checked_names:
+                            validated.add(param)
+            missed = [param for param in params if param not in validated]
+            if missed:
+                missing.append(f"{cls.name}.{func.name}@{func.lineno}: {', '.join(missed)}")
+    if missing:
+        print(f"[FAIL] {file_path}: Parameters missing validation: {' | '.join(missing)}")
         return False
-    print(f"[PASS] {file_path}: All methods with parameters have valid parameter validation")
+    print(f"[PASS] {file_path}: All public method parameters have validation")
     return True
 
 
 def check_file(file_path: Path) -> bool:
-    """
-    全量检查单个文件
-    """
     content = read_file_content(file_path)
     if not content:
         return False
-
     checks = [
         check_required_globals,
         check_license_comment,
         check_no_chinese_in_raise_print,
+        check_section_layout,
         check_init_config_section,
         check_main_py_instance_location,
         check_main_py_while_loop,
         check_type_hints_and_try_except,
-        check_method_param_validation,  # 新增:方法参数校验检查
+        check_method_param_validation,
     ]
-
-    all_passed = True
+    passed = True
     for check_func in checks:
         if not check_func(content, file_path):
-            all_passed = False
-
-    return all_passed
-
-
-# ======================================== 自定义类 ============================================
-
-# ======================================== 初始化配置 ===========================================
-
-# ========================================  主程序  ===========================================
+            passed = False
+    return passed
 
 
-def main():
-    """
-    命令行入口:支持两种模式
-    1. 传入文件路径:检查指定.py文件（原有功能）
-    2. 传入目录路径:检查目录下所有.py文件（新增功能）
-    可选参数:-r/--recursive 递归遍历子文件夹（默认不递归）
-    """
-    parser = argparse.ArgumentParser(description="Check MicroPython code rules")
-    # 位置参数:支持传入文件/目录路径（可多个）
-    parser.add_argument("paths", nargs="+", help="File path or directory path (supports multiple)")
-    # 可选参数:是否递归遍历子文件夹
-    parser.add_argument("-r", "--recursive", action="store_true", help="Recursively traverse all subfolders (only for directory paths)")
+def check_package_json(package_path: Path) -> bool:
+    driver_dir = package_path.parent
+    try:
+        data = json.loads(package_path.read_text(encoding="utf-8-sig"))
+    except Exception as e:
+        print(f"[FAIL] {package_path}: Failed to parse package.json: {str(e)}")
+        return False
+    errors = []
+    package_name = data.get("name")
+    if package_name != driver_dir.name:
+        errors.append(f'name "{package_name}" != directory "{driver_dir.name}"')
+    urls = data.get("urls")
+    if not isinstance(urls, list):
+        errors.append("urls must be a list")
+        urls = []
+    source_set = set()
+    for entry in urls:
+        if not (isinstance(entry, list) and len(entry) == 2 and all(isinstance(item, str) for item in entry)):
+            errors.append(f"invalid urls entry: {entry!r}")
+            continue
+        target, source = entry
+        source_norm = source.replace("\\", "/")
+        source_set.add(source_norm)
+        if target.startswith(("/", "\\")) or Path(target).is_absolute():
+            errors.append(f'target "{target}" must be relative and must not start with /')
+        if source.startswith(("/", "\\")) or Path(source).is_absolute():
+            errors.append(f'source "{source}" must be relative and must not start with /')
+        exact, insensitive, actual = exact_case_exists(driver_dir, source)
+        if not exact:
+            reason = "case mismatch" if insensitive else "missing"
+            errors.append(f'source "{source}" {reason}: {actual}')
+    code_dir = driver_dir / "code"
+    if code_dir.exists():
+        for py_file in sorted(code_dir.rglob("*.py")):
+            if py_file.name == "main.py":
+                continue
+            rel_source = str(py_file.relative_to(driver_dir)).replace("\\", "/")
+            if rel_source not in source_set:
+                if TEST_DEMO_PATTERN.search(py_file.name):
+                    errors.append(f'test/demo file "{rel_source}" is under code/ but absent from urls; move to examples/ or define publish policy')
+                else:
+                    errors.append(f'code file "{rel_source}" is absent from urls')
+    else:
+        errors.append("missing code/ directory")
+    if errors:
+        print(f"[FAIL] {package_path}: {' | '.join(errors)}")
+        return False
+    print(f"[PASS] {package_path}: package.json urls/name/source paths are valid")
+    return True
 
-    args = parser.parse_args()
 
-    # 存储所有待检查的.py文件路径
+def collect_py_files(paths: list, recursive: bool) -> list:
     py_files = []
-    # 遍历所有传入的路径（文件/目录）
-    for path_str in args.paths:
+    for path_str in paths:
         path = Path(path_str)
-        # 处理路径不存在的情况
         if not path.exists():
             print(f"[ERROR] Path does not exist:{path_str}")
-            exit(1)
-
-        # 情况1:传入的是文件，且是.py文件 → 加入列表
+            sys.exit(1)
         if path.is_file() and path.suffix == ".py":
             py_files.append(path)
-        # 情况2:传入的是文件，但不是.py文件 → 跳过并提示
-        elif path.is_file() and path.suffix != ".py":
+        elif path.is_file():
             print(f"[WARNING] Skip non-.py file:{path_str}")
-        # 情况3:传入的是目录 → 遍历目录下的.py文件
         elif path.is_dir():
-            if args.recursive:
-                # 递归遍历目录下所有.py文件
-                py_files.extend(Path(path).rglob("*.py"))
-            else:
-                # 仅遍历目录下直接的.py文件（不递归子文件夹）
-                py_files.extend(Path(path).glob("*.py"))
+            py_files.extend(path.rglob("*.py") if recursive else path.glob("*.py"))
+    return sorted(set(py_files))
 
-    # 去重（避免重复检查同一文件）
-    py_files = list(set(py_files))
-    if not py_files:
-        print("[ERROR] No .py files found to check")
-        exit(1)
 
-    # 批量检查所有.py文件
-    passed = True
-    failed_files = []
-    print(f"[INFO] Found {len(py_files)} .py files, starting check...\n")
-    for file_path in py_files:
-        print(f"	[DOING] Checking file:{file_path}")
-        if not check_file(file_path):
-            passed = False
-            failed_files.append(str(file_path))
-        print("-" * 80)  # 分隔线
+def collect_package_files(paths: list, recursive: bool) -> list:
+    package_files = []
+    for path_str in paths:
+        path = Path(path_str)
+        if path.is_file() and path.name == "package.json":
+            package_files.append(path)
+        elif path.is_file():
+            candidates = [path.parent / "package.json", path.parent.parent / "package.json"]
+            package_files.extend(candidate for candidate in candidates if candidate.exists())
+        elif path.is_dir():
+            package_files.extend(path.rglob("package.json") if recursive else path.glob("package.json"))
+    return sorted(set(package_files))
 
-    # 输出汇总结果
+
+# ======================================== 鑷畾涔夌被 ============================================
+
+# ======================================== 鍒濆鍖栭厤缃?===========================================
+
+# ========================================  涓荤▼搴? ===========================================
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Check MicroPython code rules")
+    parser.add_argument("paths", nargs="+", help="File path or directory path (supports multiple)")
+    parser.add_argument("-r", "--recursive", action="store_true", help="Recursively traverse all subfolders")
+    args = parser.parse_args()
+
+    py_files = collect_py_files(args.paths, args.recursive)
+    package_files = collect_package_files(args.paths, args.recursive)
+
+    if not py_files and not package_files:
+        print("[ERROR] No .py files or package.json files found to check")
+        sys.exit(1)
+
+    failed_items = []
+    if py_files:
+        print(f"[INFO] Found {len(py_files)} .py files, starting check...\n")
+        for file_path in py_files:
+            print(f"\t[DOING] Checking file:{file_path}")
+            if not check_file(file_path):
+                failed_items.append(str(file_path))
+            print("-" * 80)
+
+    if package_files:
+        print(f"[INFO] Found {len(package_files)} package.json files, starting package check...\n")
+        for package_path in package_files:
+            print(f"\t[DOING] Checking package:{package_path}")
+            if not check_package_json(package_path):
+                failed_items.append(str(package_path))
+            print("-" * 80)
+
+    total = len(py_files) + len(package_files)
     print("\n[DONE] [SUMMARY] Check summary:")
-    print(f"Total files:{len(py_files)}")
-    print(f"Passed:{len(py_files) - len(failed_files)}")
-    print(f"Failed:{len(failed_files)}")
-    if failed_files:
-        print(f"\n[FAIL] Files with failed checks:")
-        for f in failed_files:
-            print(f"  - {f}")
-        exit(1)
-    else:
-        print("\n[PASS] All files passed checks!")
-        exit(0)
+    print(f"Total items:{total}")
+    print(f"Passed:{total - len(failed_items)}")
+    print(f"Failed:{len(failed_items)}")
+    if failed_items:
+        print("\n[FAIL] Items with failed checks:")
+        for item in failed_items:
+            print(f"  - {item}")
+        sys.exit(1)
+    print("\n[PASS] All files passed checks!")
+    sys.exit(0)
 
 
 if __name__ == "__main__":
